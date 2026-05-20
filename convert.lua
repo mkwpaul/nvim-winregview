@@ -3,7 +3,7 @@
 -- invoked manually via `:so convert.lua`
 require('ts-vimdoc').docgen({
 	input_file='README.md',
-	output_file = 'doc/tfvc.txt',
+	output_file = 'doc/winregview.txt',
 	project_name='tfvc',
 })
 
