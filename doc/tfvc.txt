@@ -1,0 +1,277 @@
+*tfvc.txt*                                            Last change: 2026 May 20
+
+==============================================================================
+Table of Contents                                     *tfvc-table-of-contents*
+
+Features ..................................................... |tfvc-features|
+Requirements ............................................. |tfvc-requirements|
+Installation ............................................. |tfvc-installation|
+Usage ........................................................... |tfvc-usage|
+Opening the Registry ............................. |tfvc-opening-the-registry|
+Navigation Keybindings ......................... |tfvc-navigation-keybindings|
+URL Format ................................................. |tfvc-url-format|
+Registry Root Keys ................................. |tfvc-registry-root-keys|
+Registry Value Types ............................. |tfvc-registry-value-types|
+Example Workflow ..................................... |tfvc-example-workflow|
+Buffer Types ............................................. |tfvc-buffer-types|
+Registry Key Buffer (`filetype=winregview`)  |tfvc-registry-key-buffer-(`filetype=winregview`)|
+Registry Value Buffer (`filetype=winregvalue`)  |tfvc-registry-value-buffer-(`filetype=winregvalue`)|
+Limitations ............................................... |tfvc-limitations|
+Safety ......................................................... |tfvc-safety|
+Troubleshooting ....................................... |tfvc-troubleshooting|
+"Access Denied" errors .......................... |tfvc-access-denied"-errors|
+reg.exe not found ................................... |tfvc-reg.exe-not-found|
+Buffer doesn't load / shows error ... |tfvc-buffer-doesn't-load-/-shows-error|
+Configuration ........................................... |tfvc-configuration|
+
+==============================================================================
+NVIM-WINREGVIEW                                         *tfvc-nvim-winregview*
+
+
+A Neovim plugin for browsing and viewing the Windows Registry, similar to
+browsing files in a directory.
+
+Inspired by oil.nvim.
+
+Vibe-coded. (Its not that complicated)
+
+
+------------------------------------------------------------------------------
+FEATURES                                                       *tfvc-features*
+
+
+- Browse Windows Registry keys hierarchically
+- View registry values with type and data information
+- Navigate using familiar Vim keybindings (`<CR>`, `-`, `q`)
+- Read-only viewing (safe to explore without accidental modifications)
+- Uses native Windows `reg.exe` utility (no external dependencies)
+- Async operations (non-blocking)
+
+------------------------------------------------------------------------------
+REQUIREMENTS                                               *tfvc-requirements*
+
+
+- Neovim >= 0.9.0
+- Windows OS
+- `reg.exe` (included with Windows)
+
+------------------------------------------------------------------------------
+INSTALLATION                                               *tfvc-installation*
+
+
+Add the repo using the plugin-manager of your choice. There are no options.
+
+
+------------------------------------------------------------------------------
+USAGE                                                             *tfvc-usage*
+
+
+
+                                                                              
+OPENING THE REGISTRY                               *tfvc-opening-the-registry*
+
+Use the `:WinReg` command to open the Windows Registry:
+
+>vim
+    " Open registry root (shows HKEY_* root keys)
+    :WinReg
+    
+    " Open a specific registry path
+    :WinReg HKEY_LOCAL_MACHINE\Software
+    
+    " Using abbreviations
+    :WinReg HKLM\Software\Microsoft
+    
+    " Using forward slashes also works
+    :WinReg HKCU/Software
+<
+
+                                                                              
+NAVIGATION KEYBINDINGS                           *tfvc-navigation-keybindings*
+
+Once in a registry view buffer:
+
+- `<CR>` (Enter) - Navigate into subkey / View registry value
+- `-` - Go to parent key
+- `q` - Close the buffer
+- Standard Vim navigation (`j`, `k`, `gg`, `G`, `/`, etc.)
+
+                                                                              
+URL FORMAT                                                   *tfvc-url-format*
+
+The plugin uses custom URL schemes for navigation:
+
+>
+    winreg:///key/HKEY_LOCAL_MACHINE\Software\Microsoft
+    winreg:///value/HKLM\Software\Microsoft#value=ProductName
+<
+You can also use these URLs directly with `:edit`:
+
+>vim
+    :edit winreg:///key/HKLM\Software
+<
+
+------------------------------------------------------------------------------
+REGISTRY ROOT KEYS                                   *tfvc-registry-root-keys*
+
+
+The plugin supports all standard Windows registry root keys:
+
+| Full Name | Abbreviation |
+|-----------|--------------|
+| HKEY_CLASSES_ROOT | HKCR |
+| HKEY_CURRENT_USER | HKCU |
+| HKEY_LOCAL_MACHINE | HKLM |
+| HKEY_USERS | HKU |
+| HKEY_CURRENT_CONFIG | HKCC |
+
+
+------------------------------------------------------------------------------
+REGISTRY VALUE TYPES                               *tfvc-registry-value-types*
+
+
+The plugin recognizes and displays these registry value types:
+
+- `String` (REG_SZ)
+- `ExpandString` (REG_EXPAND_SZ)
+- `Binary` (REG_BINARY)
+- `DWord` (REG_DWORD)
+- `QWord` (REG_QWORD)
+- `MultiString` (REG_MULTI_SZ)
+- `None` (REG_NONE)
+
+------------------------------------------------------------------------------
+EXAMPLE WORKFLOW                                       *tfvc-example-workflow*
+
+
+1. Start at the root:
+>vim
+    :WinReg
+<
+2. Navigate to a root key by pressing `<CR>` on `HKEY_LOCAL_MACHINE\`
+3. Browse subkeys by pressing `<CR>` on any `[KEY]` entry
+4. View a registry value by pressing `<CR>` on any value entry
+5. Go back with `-` or close with `q`
+
+------------------------------------------------------------------------------
+BUFFER TYPES                                               *tfvc-buffer-types*
+
+
+
+                                                                              
+REGISTRY KEY BUFFER (`FILETYPE=WINREGVIEW`)*tfvc-registry-key-buffer-(`filetype=winregview`)*
+
+Shows a formatted list of subkeys and values:
+
+>
+    # Registry Key: HKEY_CURRENT_USER\Software
+    
+    .. (parent: HKEY_CURRENT_USER)
+    
+    ## Subkeys (3)
+    
+    [KEY]  Microsoft\
+    [KEY]  Adobe\
+    [KEY]  Google\
+    
+    ## Values (2)
+    
+    [String]        AppName       My Application
+    [DWord]         Version       1
+<
+
+                                                                              
+REGISTRY VALUE BUFFER (`FILETYPE=WINREGVALUE`)*tfvc-registry-value-buffer-(`filetype=winregvalue`)*
+
+Shows detailed information about a specific registry value:
+
+>
+    # Registry Value
+    
+    Path:  HKEY_CURRENT_USER\Software\MyApp
+    Name:  Version
+    Type:  DWord (REG_DWORD)
+    
+    ## Data
+    
+    0x1
+<
+
+------------------------------------------------------------------------------
+LIMITATIONS                                                 *tfvc-limitations*
+
+
+- **Read-only**: This plugin is intentionally read-only for safety. Use
+  Windows `regedit.exe` to make modifications.
+- **Permissions**: Some registry keys require administrator privileges. Run
+  Neovim as administrator to access protected keys.
+- **Binary Data**: Binary values are displayed as-is from `reg.exe` output
+  (usually hex format).
+- **Large Keys**: Keys with thousands of subkeys/values may take time to load.
+
+------------------------------------------------------------------------------
+SAFETY                                                           *tfvc-safety*
+
+
+This plugin is **read-only** and uses `reg.exe query` commands exclusively. It
+cannot modify, create, or delete any registry keys or values. This makes it
+safe to explore the Windows Registry without risk of system damage.
+
+
+------------------------------------------------------------------------------
+TROUBLESHOOTING                                         *tfvc-troubleshooting*
+
+
+
+                                                                              
+"ACCESS DENIED" ERRORS                            *tfvc-access-denied"-errors*
+
+Some registry keys require administrator privileges. Run Neovim as
+administrator:
+
+>powershell
+    # Run PowerShell as Administrator, then:
+    nvim
+<
+
+                                                                              
+REG.EXE NOT FOUND                                     *tfvc-reg.exe-not-found*
+
+The `reg.exe` utility should be included with Windows. Verify it's in your
+PATH:
+
+>powershell
+    reg.exe /?
+<
+
+                                                                              
+BUFFER DOESN'T LOAD / SHOWS ERROR     *tfvc-buffer-doesn't-load-/-shows-error*
+
+Check the error message with `:messages`. Common issues:
+
+- Invalid registry path
+- Access denied (requires admin rights)
+- Registry key doesn't exist
+
+------------------------------------------------------------------------------
+CONFIGURATION                                             *tfvc-configuration*
+
+
+The plugin works out of the box with no configuration required. However, you
+can customize keybindings:
+
+>lua
+    -- Add custom keybindings for quick access to common registry locations
+    vim.api.nvim_create_user_command('RegRun', function()
+      vim.cmd('WinReg HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run')
+    end, { desc = 'Open Run registry key' })
+    
+    vim.api.nvim_create_user_command('RegUninstall', function()
+      vim.cmd('WinReg HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall')
+    end, { desc = 'Open Uninstall registry key' })
+    
+    -- Add a keymap to quickly open registry from normal mode
+    vim.keymap.set('n', '<leader>wr', ':WinReg<CR>', { desc = 'Open Windows Registry' })
+<
+
+vim:tw=78:ts=8:ft=help:norl:
