@@ -53,8 +53,19 @@ Once in a registry view buffer:
 
 - `<CR>` (Enter) - Navigate into subkey / View registry value
 - `-` - Go to parent key
+- `W` - Toggle between WOW6432Node (32-bit) and normal (64-bit) registry view
 - `q` - Close the buffer
 - Standard Vim navigation (`j`, `k`, `gg`, `G`, `/`, etc.)
+
+### WOW6432Node Toggle
+
+On 64-bit Windows systems, 32-bit applications have their registry keys redirected to special `WOW6432Node` subkeys. Press `W` to quickly toggle between the 32-bit and 64-bit views of registry keys.
+
+For example:
+- `HKEY_LOCAL_MACHINE\Software\MyApp` ⟷ `HKEY_LOCAL_MACHINE\Software\WOW6432Node\MyApp`
+- `HKEY_CLASSES_ROOT\CLSID\{...}` ⟷ `HKEY_CLASSES_ROOT\WOW6432Node\CLSID\{...}`
+
+This feature works in both key listing and value detail views.
 
 ### URL Format
 

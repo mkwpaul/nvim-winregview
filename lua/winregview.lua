@@ -99,6 +99,54 @@ local function get_parent_path(path)
   return parent
 end
 
+--- Toggle between WOW6432Node (32-bit) and normal (64-bit) registry path
+--- @param path string Registry path
+--- @return string|nil toggled path or nil if not applicable
+local function toggle_wow6432node(path)
+  if not path or path == '' then
+    return nil
+  end
+  
+  -- Convert to backslash for consistency
+  path = path:gsub('/', '\\')
+  
+  -- Check if path contains WOW6432Node
+  if path:match('\\WOW6432Node\\') then
+    -- Remove WOW6432Node
+    return path:gsub('\\WOW6432Node\\', '\\')
+  else
+    -- Check if we can add WOW6432Node (must be in a location where it makes sense)
+    -- WOW6432Node typically appears in: HKCR, HKLM\Software, HKLM\System
+    -- Use case-insensitive matching with :lower()
+    local lower_path = path:lower()
+    
+    -- Try to insert WOW6432Node after appropriate prefixes
+    if lower_path:match('^hkey_classes_root\\') then
+      -- Insert after HKCR
+      return path:gsub('^(HKEY_CLASSES_ROOT)\\', '%1\\WOW6432Node\\', 1)
+    elseif lower_path:match('^hkey_local_machine\\software\\') then
+      -- Insert after HKLM\Software (case-insensitive replacement)
+      local prefix_end = path:lower():find('\\software\\')
+      if prefix_end then
+        local prefix = path:sub(1, prefix_end + 8)  -- Include "\Software"
+        local suffix = path:sub(prefix_end + 9)      -- Everything after "\Software\"
+        return prefix .. '\\WOW6432Node' .. suffix
+      end
+    elseif lower_path:match('^hkey_local_machine\\system\\currentcontrolset\\services\\') then
+      -- Insert after Services
+      local services_end = path:lower():find('\\services\\')
+      if services_end then
+        local prefix = path:sub(1, services_end + 9)  -- Include "\Services"
+        local suffix = path:sub(services_end + 10)     -- Everything after "\Services\"
+        return prefix .. '\\WOW6432Node' .. suffix
+      end
+    end
+    
+    -- If no pattern matched, return nil (not applicable)
+    return nil
+  end
+end
+
 --- Parse reg.exe query output into subkeys and values
 --- @param output string Output from reg.exe query
 --- @param current_path string|nil The current registry path being queried (to filter it out from subkeys)
@@ -390,6 +438,17 @@ function M.bufread_key(args)
       end
     end, bufOpt)
     
+    -- Set up W key to toggle WOW6432Node
+    vim.keymap.set('n', 'W', function()
+      local toggled_path = toggle_wow6432node(normalized_path)
+      if toggled_path then
+        local target_uri = 'winreg:///key/' .. toggled_path
+        vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
+      else
+        vim.notify('WOW6432Node toggle not applicable for this path', vim.log.levels.INFO)
+      end
+    end, bufOpt)
+    
     vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
   end))
 end
@@ -493,6 +552,21 @@ function M.bufread_value(args)
     vim.keymap.set('n', '-', function()
       local target_uri = 'winreg:///key/' .. normalized_path
       vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
+    end, bufOpt)
+    
+    -- Set up W key to toggle WOW6432Node
+    vim.keymap.set('n', 'W', function()
+      local toggled_path = toggle_wow6432node(normalized_path)
+      if toggled_path then
+        -- URL encode the value name for the new path
+        local encoded = value_name:gsub('([^%w%-%.%_%~])', function(c)
+          return string.format('%%%02X', string.byte(c))
+        end)
+        local target_uri = 'winreg:///value/' .. toggled_path .. '#value=' .. encoded
+        vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
+      else
+        vim.notify('WOW6432Node toggle not applicable for this path', vim.log.levels.INFO)
+      end
     end, bufOpt)
     
     vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
