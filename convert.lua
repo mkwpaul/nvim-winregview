@@ -4,7 +4,7 @@
 require('ts-vimdoc').docgen({
 	input_file='README.md',
 	output_file = 'doc/winregview.txt',
-	project_name='tfvc',
+	project_name='winregview',
 })
 
 -- and also regenerate tags
