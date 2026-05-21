@@ -91,7 +91,6 @@ local function get_parent_path(path)
     return nil
   end
 
-  -- Convert to backslash
   path = path:gsub('/', '\\')
 
   -- Find last backslash
@@ -99,50 +98,54 @@ local function get_parent_path(path)
   return parent
 end
 
+
 --- Toggle between WOW6432Node (32-bit) and normal (64-bit) registry path
 --- @param path string Registry path
 --- @return string|nil toggled path or nil if not applicable
-local function toggle_wow6432node(path)
+function M.toggle_wow6432node(path)
   if not path or path == '' then
     return nil
   end
 
-  -- Convert to backslash for consistency
+  local str_util = require('winregview.str_utils')
+
   path = path:gsub('/', '\\')
 
   -- Check if path contains WOW6432Node
-  if path:match('\\WOW6432Node\\') then
-    -- Remove WOW6432Node
-    return path:gsub('\\WOW6432Node\\', '\\')
-  else
-    -- Check if we can add WOW6432Node (must be in a location where it makes sense)
-    -- WOW6432Node typically appears in: HKCR, HKLM\Software, HKLM\System
-    -- Use case-insensitive matching with :lower()
-    local lower_path = path:lower()
+  if str_util.string_find(path, '\\WOW6432Node\\', true) then
 
-    -- Try to insert WOW6432Node after appropriate prefixes
-    if lower_path:match('^hkey_classes_root\\') then
-      -- Insert after HKCR
-      return path:gsub('^(HKEY_CLASSES_ROOT)\\', '%1\\WOW6432Node\\', 1)
-    elseif lower_path:match('^hkey_local_machine\\software\\') then
-      -- Insert after HKLM\Software (case-insensitive replacement)
-      local prefix_end = path:lower():find('\\software\\')
-      if prefix_end then
-        local prefix = path:sub(1, prefix_end + 8)  -- Include "\Software"
-        local suffix = path:sub(prefix_end + 9)      -- Everything after "\Software\"
-        return prefix .. '\\WOW6432Node' .. suffix
-      end
-    elseif lower_path:match('^hkey_local_machine\\system\\currentcontrolset\\services\\') then
-      -- Insert after Services
-      local services_end = path:lower():find('\\services\\')
-      if services_end then
-        local prefix = path:sub(1, services_end + 9)  -- Include "\Services"
-        local suffix = path:sub(services_end + 10)     -- Everything after "\Services\"
-        return prefix .. '\\WOW6432Node' .. suffix
+    return str_util.string_replace(path, '\\WOW6432Node\\', '\\', true)
+  else
+
+    local wow6432node_redirected_keys = {
+      -- HKEY_LOCAL_MACHINE redirected keys
+      "HKEY_LOCAL_MACHINE\\SOFTWARE",
+      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Classes\\CLSID",
+      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Classes\\DirectShow",
+      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Classes\\Interface",
+      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Classes\\Media Type",
+      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Classes\\MediaFoundation",
+
+      -- HKEY_CURRENT_USER redirected keys
+      "HKEY_CURRENT_USER\\SOFTWARE\\Classes\\CLSID",
+      "HKEY_CURRENT_USER\\SOFTWARE\\Classes\\DirectShow",
+      "HKEY_CURRENT_USER\\SOFTWARE\\Classes\\Interface",
+      "HKEY_CURRENT_USER\\SOFTWARE\\Classes\\Media Type",
+      "HKEY_CURRENT_USER\\SOFTWARE\\Classes\\MediaFoundation",
+    }
+
+    for _, value in ipairs(wow6432node_redirected_keys) do
+
+      -- Try to replace the prefix with the same prefix + \WOW6432Node
+      -- Using case-insensitive matching
+      local result = str_util.string_replace(path, value, value .. '\\WOW6432Node', true)
+
+      -- If replacement occurred (result differs from original path), return it
+      if result ~= path then
+        return result
       end
     end
 
-    -- If no pattern matched, return nil (not applicable)
     return nil
   end
 end
@@ -155,8 +158,6 @@ local function parse_reg_output(output, current_path)
   local entries = {}
   local lines = vim.split(output, '\n', { plain = true })
 
-  local current_key = nil
-
   for _, line in ipairs(lines) do
     -- Remove carriage returns
     line = line:gsub('\r', '')
@@ -168,7 +169,6 @@ local function parse_reg_output(output, current_path)
 
     -- Check if this is a subkey line (starts with HKEY)
     if vim.startswith(line, 'HKEY') then
-      current_key = line
 
       -- Skip if this is the current path itself (not a subkey)
       if current_path and line == current_path then
@@ -201,11 +201,6 @@ local function parse_reg_output(output, current_path)
         local value_name = parts[1]
         local reg_type = parts[2]
         local data = table.concat(parts, ' ', 3) or ''
-
-        -- Handle (Default) value
-        if value_name == '(Default)' then
-          value_name = '(Default)'
-        end
 
         table.insert(entries, {
           type = 'value',
@@ -447,7 +442,7 @@ function M.bufread_key(args)
 
     -- Set up W key to toggle WOW6432Node
     vim.keymap.set('n', 'W', function()
-      local toggled_path = toggle_wow6432node(normalized_path)
+      local toggled_path = M.toggle_wow6432node(normalized_path)
       if toggled_path then
         local target_uri = 'winreg:///key/' .. toggled_path
         vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
@@ -570,7 +565,7 @@ function M.bufread_value(args)
 
     -- Set up W key to toggle WOW6432Node
     vim.keymap.set('n', 'W', function()
-      local toggled_path = toggle_wow6432node(normalized_path)
+      local toggled_path = M.toggle_wow6432node(normalized_path)
       if toggled_path then
         -- URL encode the value name for the new path
         local encoded = value_name:gsub('([^%w%-%.%_%~])', function(c)
@@ -586,7 +581,6 @@ function M.bufread_value(args)
     vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
   end))
 end
-
 
 --- Complete registry paths
 --- @param start string The partial path typed so far
