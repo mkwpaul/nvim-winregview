@@ -6,7 +6,7 @@ vim.api.nvim_create_autocmd("BufReadCmd", {
   pattern = "winreg:///key/*",
   group = augroup_winregview,
   callback = function(...)
-    require('winregview').bufread_key(...)
+    require('winregview.core').bufread_key(...)
   end
 })
 
@@ -15,7 +15,7 @@ vim.api.nvim_create_autocmd("BufReadCmd", {
   pattern = "winreg:///value/*",
   group = augroup_winregview,
   callback = function(...)
-    require('winregview').bufread_value(...)
+    require('winregview.core').bufread_value(...)
   end
 })
 
@@ -43,7 +43,7 @@ end, {
   nargs = "*",
   desc = "Open Windows Registry view",
   complete = function(arglead, _, _)
-    return require('winregview').registry_path_complete(arglead)
+    return require('winregview.core').registry_path_complete(arglead)
   end,
 })
 
@@ -51,12 +51,13 @@ end, {
 ---@diagnostic disable-next-line: lowercase-global
 function _G.winreg.export_regbuf_as_reg()
   local buf = vim.api.nvim_get_current_buf()
-  local reg_path = vim.b[buf].winreg_path
-
-  if not reg_path or reg_path == '' then
+  local bufinfo = vim.b[buf].winreg
+  if not bufinfo then
     vim.notify('Not in a registry view buffer', vim.log.levels.ERROR)
     return
   end
+
+  local reg_path = bufinfo.path
 
   -- Create a temporary file for the export
   local temp_file = vim.fn.tempname() .. '.reg'

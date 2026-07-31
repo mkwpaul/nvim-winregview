@@ -1,7 +1,7 @@
 " Syntax highlighting for Windows Registry key view buffers
 
 " Comments (lines starting with #)
-syn match Comment "#.*"
+syn match Comment "^#.*"
 
 " Section headers (## Subkeys, ## Values)
 syn match Function "##.*"
@@ -10,7 +10,8 @@ syn match Function "##.*"
 syn match Special "\.\. (parent:.*)"
 
 " Registry key entries
-syn match Directory "\[KEY\]"
+syn match Function "\[KEY\]"
+syn match Type "\[VALUE\]"
 
 " Registry value type tags
 syn match Type "\[String\s*\]"
@@ -29,3 +30,4 @@ syn match Delimiter "\\\s*$"
 
 " Empty message
 syn match Comment "(No subkeys or values)"
+

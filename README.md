@@ -11,7 +11,6 @@ Vibe-coded. (It's a pretty simple plugin)
 - View registry values with type and data information
 - Read-only viewing (safe to explore without accidental modifications)
 - Uses native Windows `reg.exe` utility (no external dependencies)
-- Async operations (non-blocking)
 
 ## Requirements
 

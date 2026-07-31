@@ -1,5 +1,22 @@
 local M = {}
 
+
+---@class winreg.bufinfo_key
+---@field type 'key'
+---@field uri string
+---@field entries table
+---@field path string
+---@field line_to_entry table<number, string>
+
+---@class winreg.bufinfo_value
+---@field type 'value'
+---@field uri string
+---@field entries table
+---@field path string
+---@field value_name string
+
+---@alias winreg.bufinfo winreg.bufinfo_key | winreg.bufinfo_value
+
 -- Registry root keys mapping
 local ROOT_KEYS = {
   { full = "HKEY_CLASSES_ROOT", abbr = "HKCR" },
@@ -20,10 +37,19 @@ local REG_TYPES = {
   REG_NONE = "None",
 }
 
+function M.parse_uri_both(uri)
+  local prefix = 'winreg:///key/'
+  if vim.startswith(uri, prefix) then
+    return M.parse_key_uri(uri)
+  else
+    return M.parse_value_uri(uri)
+  end
+end
+
 --- Parse winreg:///key/{path} URIs
 --- @param uri string
 --- @return string path
-local function parse_key_uri(uri)
+function M.parse_key_uri(uri)
   local prefix = 'winreg:///key/'
   if not vim.startswith(uri, prefix) then
     return uri
@@ -34,7 +60,7 @@ end
 --- Parse winreg:///value/{path}#value={name} URIs
 --- @param uri string
 --- @return string path, string|nil value_name
-local function parse_value_uri(uri)
+function M.parse_value_uri(uri)
   local prefix = 'winreg:///value/'
   if not vim.startswith(uri, prefix) then
     return uri, nil
@@ -64,12 +90,11 @@ end
 --- Normalize registry path for reg.exe
 --- @param path string
 --- @return string|nil normalized path or nil if invalid
-local function normalize_reg_path(path)
+function M.normalize_reg_path(path)
   if not path or path == '' then
     return nil
   end
 
-  -- Convert forward slashes to backslashes
   path = path:gsub('/', '\\')
 
   -- Expand abbreviations
@@ -236,19 +261,27 @@ local function format_entry(entry)
   end
 end
 
+local function register_toggle_buf(buf)
+  local function impl()
+    require('winregview.favorites').toggle_buf()
+  end
+vim.keymap.set('n', '<leader>wf', impl, { buf = buf })
+end
+
 -- View a registry key (list subkeys and values)
 function M.bufread_key(args)
   local buf = args.buf
   local uri = args.file
-  local reg_path = parse_key_uri(uri)
+  local reg_path = M.parse_key_uri(uri)
   local bufOpt = { buf = buf }
 
-  vim.api.nvim_set_option_value('modifiable', true, bufOpt)
-  vim.api.nvim_set_option_value('buftype', 'nofile', bufOpt)
-  vim.api.nvim_set_option_value('swapfile', false, bufOpt)
-  vim.api.nvim_set_option_value('filetype', 'winregview', bufOpt)
   vim.api.nvim_set_option_value('bufhidden', 'hide', bufOpt)
   vim.api.nvim_set_option_value('buflisted', false, bufOpt)
+  vim.api.nvim_set_option_value('buftype', 'nofile', bufOpt)
+  vim.api.nvim_set_option_value('filetype', 'winregview', bufOpt)
+  vim.api.nvim_set_option_value('swapfile', false, bufOpt)
+
+  vim.api.nvim_set_option_value('modifiable', true, bufOpt)
 
   -- Special case: empty path = show root keys
   if reg_path == '' then
@@ -258,10 +291,24 @@ function M.bufread_key(args)
       table.insert(lines, '[KEY]  ' .. root.full .. '\\')
     end
 
+    local favs = require('winregview.favorites')
+    if #favs.entries > 0 then
+      table.insert(lines, '')
+      table.insert(lines, '# Favorites')
+      for _, fav_uri in ipairs(favs.entries) do
+
+        local fav_key, fav_value = M.parse_uri_both(fav_uri)
+        if not fav_value then
+          table.insert(lines, '[KEY]  ' .. fav_key .. '\\')
+        else
+          table.insert(lines, '[VALUE]  ' .. fav_key .. '#value=' .. fav_value)
+        end
+      end
+    end
+
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.api.nvim_set_option_value('modifiable', false, bufOpt)
 
-    -- Set up Enter key to navigate
     vim.api.nvim_buf_set_keymap(buf, 'n', '<CR>', '', {
       noremap = true,
       silent = true,
@@ -272,10 +319,15 @@ function M.bufread_key(args)
           return
         end
 
-        -- Extract root key name
-        local key_name = line:match('%[KEY%]%s+(.+)\\')
-        if key_name then
-          local target_uri = 'winreg:///key/' .. key_name
+        local path = line:match('%[KEY%]%s+(.+)\\')
+        if path then
+          local target_uri = 'winreg:///key/' .. path
+          vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
+        end
+
+        path = line:match('%[VALUE%]%s+(.+)')
+        if path then
+          local target_uri = 'winreg:///value/' .. path
           vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
         end
       end,
@@ -283,24 +335,21 @@ function M.bufread_key(args)
 
     vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
 
-    -- move cursor to first key or value
     vim.api.nvim_buf_call(buf, function()
+      ---@diagnostic disable-next-line: param-type-mismatch
       pcall(vim.cmd, '/[')
       vim.cmd.nohlsearch()
     end)
     return
-
   end
 
-  -- Normalize the path
-  local normalized_path = normalize_reg_path(reg_path)
+  local normalized_path = M.normalize_reg_path(reg_path)
   if not normalized_path then
     vim.notify('Invalid registry path: ' .. reg_path, vim.log.levels.ERROR)
     vim.api.nvim_set_option_value('modifiable', false, bufOpt)
     return
   end
 
-  -- Query registry asynchronously
   vim.system({ 'reg.exe', 'query', normalized_path }, { text = true }, vim.schedule_wrap(function(result)
     if result.code ~= 0 then
       local err_msg = result.stderr or 'Failed to query registry'
@@ -322,10 +371,8 @@ function M.bufread_key(args)
       return
     end
 
-    -- Parse output
     local entries = parse_reg_output(result.stdout or '', normalized_path)
 
-    -- Separate keys and values
     local keys = {}
     local values = {}
     for _, entry in ipairs(entries) do
@@ -342,10 +389,7 @@ function M.bufread_key(args)
       '',
     }
 
-    -- Map from line number to entry
     local line_to_entry = {}
-
-    -- Add parent navigation hint
     local parent = get_parent_path(normalized_path)
     if parent then
       table.insert(lines, '.. (go to parent key)')
@@ -383,9 +427,16 @@ function M.bufread_key(args)
     vim.api.nvim_set_option_value('modifiable', false, bufOpt)
 
     -- Store entries and line mapping in buffer variable for navigation
-    vim.b[buf].winreg_entries = entries
-    vim.b[buf].winreg_path = normalized_path
-    vim.b[buf].winreg_line_to_entry = line_to_entry
+    ---@type winreg.bufinfo_key
+    vim.b[buf].winreg = {
+      type = 'key',
+      entries = entries,
+      path = normalized_path,
+      line_to_entry = line_to_entry,
+      uri = uri,
+    }
+
+    register_toggle_buf(buf)
 
     -- Set up Enter key to navigate to subkeys or view values
     vim.api.nvim_buf_set_keymap(buf, 'n', '<CR>', '', {
@@ -453,8 +504,8 @@ function M.bufread_key(args)
 
     vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
 
-  -- move cursor to first key or value
     vim.api.nvim_buf_call(buf, function()
+      ---@diagnostic disable-next-line: param-type-mismatch
       pcall(vim.cmd, '/\\[')
       vim.cmd.nohlsearch()
     end)
@@ -466,7 +517,7 @@ end
 function M.bufread_value(args)
   local buf = args.buf
   local uri = args.file
-  local reg_path, value_name = parse_value_uri(uri)
+  local reg_path, value_name = M.parse_value_uri(uri)
   local bufOpt = { buf = buf }
 
   vim.api.nvim_set_option_value('modifiable', true, bufOpt)
@@ -482,7 +533,7 @@ function M.bufread_value(args)
     return
   end
 
-  local normalized_path = normalize_reg_path(reg_path)
+  local normalized_path = M.normalize_reg_path(reg_path)
   if not normalized_path then
     vim.notify('Invalid registry path: ' .. reg_path, vim.log.levels.ERROR)
     vim.api.nvim_set_option_value('modifiable', false, bufOpt)
@@ -557,11 +608,22 @@ function M.bufread_value(args)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.api.nvim_set_option_value('modifiable', false, bufOpt)
 
+    ---@type winreg.bufinfo_value
+    vim.b[buf].winreg = {
+      type = 'value',
+      entries = entries,
+      path = normalized_path,
+      value_name = value_name,
+      uri = uri,
+    }
+
     -- Set up - key to go back to parent key
     vim.keymap.set('n', '-', function()
       local target_uri = 'winreg:///key/' .. normalized_path
       vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
     end, bufOpt)
+
+    register_toggle_buf(buf)
 
     -- Set up W key to toggle WOW6432Node
     vim.keymap.set('n', 'W', function()
