@@ -7,10 +7,9 @@ Vibe-coded. (It's a pretty simple plugin)
 
 ## Features
 
-- Browse Windows Registry keys hierarchically
+- Browse Windows Registry keys
 - View registry values with type and data information
-- Read-only viewing (safe to explore without accidental modifications)
-- Uses native Windows `reg.exe` utility (no external dependencies)
+- Uses native Windows `reg.exe` utility (relies on sudo for editing value data)
 
 ## Requirements
 
@@ -51,6 +50,10 @@ Once in a registry view buffer:
 - `W` - Toggle between WOW6432Node (32-bit) and normal (64-bit) registry view, not applicable to all paths
 - `q` - Close the buffer
 
+
+For buffers of Registry values:
+- `E` Prompt for a new Value to write. Requires either nvim running as admin or a usable sudo utility in PATH.
+
 ### URL Format
 
 The plugin uses custom URL schemes for navigation:
@@ -69,7 +72,7 @@ Reload a buffer with `:edit!`.
 
 ## Limitations
 
-- **Read-only**: This plugin is only queries the registry and never writes to it.
+- No full editing capabilities.
 - **Permissions**: Some registry keys require administrator privileges. Run Neovim as administrator to access protected keys.
 - **Binary Data**: Binary values are displayed as-is from `reg.exe` output (usually hex format).
 - **Large Keys**: Keys with thousands of subkeys/values may take time to load.

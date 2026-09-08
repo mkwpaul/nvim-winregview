@@ -37,6 +37,25 @@ local REG_TYPES = {
   REG_NONE = "None",
 }
 
+local is_admin
+
+local function is_running_as_admin()
+  if is_admin ~= nil then
+    return is_admin
+  end
+
+  local result = vim.system({
+    'powershell.exe',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    '[bool](([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))',
+  }, { text = true }):wait()
+
+  is_admin = result.code == 0 and vim.trim(result.stdout or '') == 'True'
+  return is_admin
+end
+
 function M.parse_uri_both(uri)
   local prefix = 'winreg:///key/'
   if vim.startswith(uri, prefix) then
@@ -265,7 +284,49 @@ local function register_toggle_buf(buf)
   local function impl()
     require('winregview.favorites').toggle_buf()
   end
-vim.keymap.set('n', '<leader>wf', impl, { buf = buf })
+  vim.keymap.set('n', '<leader>wf', impl, { buffer = buf })
+end
+
+local function edit_value_data(buf, uri, path, value_name, reg_type, current_data)
+  local prompt = string.format('New data for %s (%s): ', value_name, reg_type)
+
+  vim.ui.input({
+    prompt = prompt,
+    default = current_data,
+  }, function(input)
+    if input == nil then
+      return
+    end
+
+    local cmd = { 'reg.exe', 'add', path }
+    if not is_running_as_admin() then
+      cmd = { 'sudo', 'reg.exe', 'add', path }
+    end
+
+    if value_name == '(Default)' then
+      vim.list_extend(cmd, { '/ve' })
+    else
+      vim.list_extend(cmd, { '/v', value_name })
+    end
+
+    vim.list_extend(cmd, { '/t', reg_type, '/d', input, '/f', })
+
+    vim.system(cmd, { text = true }, vim.schedule_wrap(function(result)
+      if result.code ~= 0 then
+        local err_msg = result.stderr or 'Failed to update registry value'
+        vim.notify('reg.exe add failed: ' .. err_msg, vim.log.levels.ERROR)
+        return
+      end
+
+      vim.notify('Updated registry value: ' .. value_name, vim.log.levels.INFO)
+
+      if vim.api.nvim_buf_is_valid(buf) then
+        vim.api.nvim_buf_call(buf, function()
+          vim.cmd('edit! ' .. vim.fn.fnameescape(uri))
+        end)
+      end
+    end))
+  end)
 end
 
 -- View a registry key (list subkeys and values)
@@ -489,7 +550,7 @@ function M.bufread_key(args)
         -- Go to root
         vim.cmd('edit winreg:///key/')
       end
-    end, bufOpt)
+    end, { buffer = buf })
 
     -- Set up W key to toggle WOW6432Node
     vim.keymap.set('n', 'W', function()
@@ -500,7 +561,7 @@ function M.bufread_key(args)
       else
         vim.notify('WOW6432Node toggle not applicable for this path', vim.log.levels.INFO)
       end
-    end, bufOpt)
+    end, { buffer = buf })
 
     vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
 
@@ -621,7 +682,7 @@ function M.bufread_value(args)
     vim.keymap.set('n', '-', function()
       local target_uri = 'winreg:///key/' .. normalized_path
       vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
-    end, bufOpt)
+    end, { buffer = buf })
 
     register_toggle_buf(buf)
 
@@ -638,7 +699,11 @@ function M.bufread_value(args)
       else
         vim.notify('WOW6432Node toggle not applicable for this path', vim.log.levels.INFO)
       end
-    end, bufOpt)
+    end, { buffer = buf })
+
+    vim.keymap.set('n', 'E', function()
+      edit_value_data(buf, uri, normalized_path, value_entry.name, value_entry.reg_type, value_entry.data)
+    end, { buffer = buf })
 
     vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
   end))
