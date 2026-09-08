@@ -55,10 +55,7 @@ local function is_running_as_admin()
   end
 
   local result = vim.system({
-    'powershell.exe',
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
+    'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
     '[bool](([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))',
   }, { text = true }):wait()
 
@@ -290,11 +287,18 @@ local function format_entry(entry)
   end
 end
 
-local function register_toggle_buf(buf)
-  local function impl()
-    require('winregview.favorites').toggle_buf()
+local function mapbuf(buf)
+  return function(modes, lhs, rhs, desc)
+    vim.keymap.set(modes, lhs, rhs, { buffer = buf, desc = desc })
   end
-  vim.keymap.set('n', '<leader>wf', impl, { buffer = buf })
+end
+
+local function toggle_favorite()
+  require('winregview.favorites').toggle_buf()
+end
+
+local function close_buffer()
+  vim.cmd('bd!')
 end
 
 local function reload_registry_buffer(buf, uri)
@@ -303,6 +307,11 @@ local function reload_registry_buffer(buf, uri)
       vim.cmd('edit! ' .. vim.fn.fnameescape(uri))
     end)
   end
+end
+
+local function notify_and_reload(buf, uri, msg)
+  vim.notify(msg, vim.log.levels.INFO)
+  reload_registry_buffer(buf, uri)
 end
 
 local function run_reg_command(args, opts, on_success)
@@ -376,29 +385,6 @@ local function delete_registry_entry(path, entry, on_success)
   }, on_success)
 end
 
-local function rename_registry_key(path, old_name, new_name, on_success)
-  local old_path = path .. '\\' .. old_name
-  local new_path = path .. '\\' .. new_name
-
-  run_reg_command({ 'reg.exe', 'copy', old_path, new_path, '/s', '/f' }, {
-    sudo = true,
-    error_prefix = 'reg.exe copy failed',
-    default_error = 'Failed to rename registry key',
-  }, function()
-    run_reg_command({ 'reg.exe', 'delete', old_path, '/f' }, {
-      sudo = true,
-      error_prefix = 'reg.exe delete failed',
-      default_error = 'Failed to rename registry key',
-    }, on_success)
-  end)
-end
-
-local function rename_registry_value(path, entry, new_name, on_success)
-  add_registry_value(path, new_name, entry.reg_type, entry.data, function()
-    delete_registry_entry(path, entry, on_success)
-  end)
-end
-
 local function get_entry_under_cursor(buf, line_to_entry)
   local row = unpack(vim.api.nvim_win_get_cursor(0))
   local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]
@@ -409,25 +395,56 @@ local function get_entry_under_cursor(buf, line_to_entry)
   return line_to_entry[row], line
 end
 
-local function edit_value_data(buf, uri, path, value_name, reg_type, current_data)
-  local prompt = string.format('New data for %s (%s): ', value_name, reg_type)
+local function with_entry_under_cursor(buf, line_to_entry, cb)
+  return function()
+    local entry = get_entry_under_cursor(buf, line_to_entry)
+    if entry then
+      cb(entry)
+    end
+  end
+end
 
-  vim.ui.input({
-    prompt = prompt,
-    default = current_data,
-  }, function(input)
-    if input == nil then
+local function prompt_write_value(buf, uri, path, opts)
+  opts = opts or {}
+
+  local function prompt_for_data(value_name, reg_type)
+    vim.ui.input({
+      prompt = string.format('Data for %s (%s): ', value_name, reg_type),
+      default = opts.data,
+    }, function(data_input)
+      if data_input == nil then
+        return
+      end
+
+      add_registry_value(path, value_name, reg_type, data_input, function()
+        notify_and_reload(buf, uri, string.format('%s: %s', opts.action, value_name))
+      end)
+    end)
+  end
+
+  local function prompt_for_type(value_name)
+    if opts.reg_type then
+      prompt_for_data(value_name, opts.reg_type)
       return
     end
 
-    add_registry_value(path, value_name, reg_type, input, function()
-      vim.notify('Updated registry value: ' .. value_name, vim.log.levels.INFO)
-      reload_registry_buffer(buf, uri)
+    vim.ui.select(REG_TYPE_ORDER, {
+      prompt = 'Registry value type:',
+      format_item = function(item)
+        return string.format('%s (%s)', item, REG_TYPES[item] or item)
+      end,
+    }, function(reg_type)
+      if reg_type then
+        prompt_for_data(value_name, reg_type)
+      end
     end)
-  end)
-end
+  end
 
-local function prompt_add_value(buf, uri, path)
+  if opts.value_name then
+    prompt_for_type(opts.value_name)
+    return
+  end
+
   vim.ui.input({ prompt = 'Value name (empty for default): ' }, function(name_input)
     if name_input == nil then
       return
@@ -438,29 +455,7 @@ local function prompt_add_value(buf, uri, path)
       value_name = '(Default)'
     end
 
-    vim.ui.select(REG_TYPE_ORDER, {
-      prompt = 'Registry value type:',
-      format_item = function(item)
-        return string.format('%s (%s)', item, REG_TYPES[item] or item)
-      end,
-    }, function(reg_type)
-      if not reg_type then
-        return
-      end
-
-      vim.ui.input({
-        prompt = string.format('Data for %s (%s): ', value_name, reg_type),
-      }, function(data_input)
-        if data_input == nil then
-          return
-        end
-
-        add_registry_value(path, value_name, reg_type, data_input, function()
-          vim.notify('Added registry value: ' .. value_name, vim.log.levels.INFO)
-          reload_registry_buffer(buf, uri)
-        end)
-      end)
-    end)
+    prompt_for_type(value_name)
   end)
 end
 
@@ -476,8 +471,7 @@ local function prompt_add_subkey(buf, uri, path)
     end
 
     add_registry_key(path, key_name, function()
-      vim.notify('Added registry key: ' .. key_name, vim.log.levels.INFO)
-      reload_registry_buffer(buf, uri)
+      notify_and_reload(buf, uri, 'Added registry key: ' .. key_name)
     end)
   end)
 end
@@ -505,9 +499,20 @@ local function prompt_rename_entry(buf, uri, path, entry)
         return
       end
 
-      rename_registry_key(path, entry.name, new_name, function()
-        vim.notify('Renamed subkey to: ' .. new_name, vim.log.levels.INFO)
-        reload_registry_buffer(buf, uri)
+      local old_path = path .. '\\' .. entry.name
+      local new_path = path .. '\\' .. new_name
+      run_reg_command({ 'reg.exe', 'copy', old_path, new_path, '/s', '/f' }, {
+        sudo = true,
+        error_prefix = 'reg.exe copy failed',
+        default_error = 'Failed to rename registry key',
+      }, function()
+        run_reg_command({ 'reg.exe', 'delete', old_path, '/f' }, {
+          sudo = true,
+          error_prefix = 'reg.exe delete failed',
+          default_error = 'Failed to rename registry key',
+        }, function()
+          notify_and_reload(buf, uri, 'Renamed subkey to: ' .. new_name)
+        end)
       end)
       return
     end
@@ -519,9 +524,10 @@ local function prompt_rename_entry(buf, uri, path, entry)
       return
     end
 
-    rename_registry_value(path, entry, new_name, function()
-      vim.notify('Renamed value to: ' .. new_name, vim.log.levels.INFO)
-      reload_registry_buffer(buf, uri)
+    add_registry_value(path, new_name, entry.reg_type, entry.data, function()
+      delete_registry_entry(path, entry, function()
+        notify_and_reload(buf, uri, 'Renamed value to: ' .. new_name)
+      end)
     end)
   end)
 end
@@ -567,31 +573,29 @@ function M.bufread_key(args)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.api.nvim_set_option_value('modifiable', false, bufOpt)
 
-    vim.api.nvim_buf_set_keymap(buf, 'n', '<CR>', '', {
-      noremap = true,
-      silent = true,
-      callback = function()
-        local row = unpack(vim.api.nvim_win_get_cursor(0))
-        local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]
-        if not line or line == '' or vim.startswith(line, '#') then
-          return
-        end
+    local function open_root_entry()
+      local row = unpack(vim.api.nvim_win_get_cursor(0))
+      local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]
+      if not line or line == '' or vim.startswith(line, '#') then
+        return
+      end
 
-        local path = line:match('%[KEY%]%s+(.+)\\')
-        if path then
-          local target_uri = 'winreg:///key/' .. path
-          vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
-        end
+      local path = line:match('%[KEY%]%s+(.+)\\')
+      if path then
+        local target_uri = 'winreg:///key/' .. path
+        vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
+      end
 
-        path = line:match('%[VALUE%]%s+(.+)')
-        if path then
-          local target_uri = 'winreg:///value/' .. path
-          vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
-        end
-      end,
-    })
+      path = line:match('%[VALUE%]%s+(.+)')
+      if path then
+        local target_uri = 'winreg:///value/' .. path
+        vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
+      end
+    end
 
-    vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
+    local map = mapbuf(buf)
+    map('n', '<CR>', open_root_entry, 'Open registry entry')
+    map('n', 'q', close_buffer, 'Close buffer')
 
     vim.api.nvim_buf_call(buf, function()
       ---@diagnostic disable-next-line: param-type-mismatch
@@ -694,60 +698,46 @@ function M.bufread_key(args)
       uri = uri,
     }
 
-    register_toggle_buf(buf)
+    local function open_entry()
+      local entry, line = get_entry_under_cursor(buf, line_to_entry)
+      if not line then
+        return
+      end
 
-    -- Set up Enter key to navigate to subkeys or view values
-    vim.api.nvim_buf_set_keymap(buf, 'n', '<CR>', '', {
-      noremap = true,
-      silent = true,
-      callback = function()
-        local entry, line = get_entry_under_cursor(buf, line_to_entry)
-        if not line then
-          return
-        end
-
-        -- Handle parent navigation
-        if vim.startswith(line, '..') then
-          if parent then
-            local target_uri = 'winreg:///key/' .. parent
-            vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
-          end
-          return
-        end
-
-        if not entry then
-          return
-        end
-
-        if entry.type == 'key' then
-          -- Navigate to subkey
-          local target_uri = 'winreg:///key/' .. normalized_path .. '\\' .. entry.name
-          vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
-        elseif entry.type == 'value' then
-          -- URL encode the value name
-          local encoded = entry.name:gsub('([^%w%-%.%_%~])', function(c)
-            return string.format('%%%02X', string.byte(c))
-          end)
-
-          local target_uri = 'winreg:///value/' .. normalized_path .. '#value=' .. encoded
+      if vim.startswith(line, '..') then
+        if parent then
+          local target_uri = 'winreg:///key/' .. parent
           vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
         end
-      end,
-    })
+        return
+      end
 
-    -- Set up - key to go to parent
-    vim.keymap.set('n', '-', function()
+      if not entry then
+        return
+      end
+
+      if entry.type == 'key' then
+        local target_uri = 'winreg:///key/' .. normalized_path .. '\\' .. entry.name
+        vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
+      elseif entry.type == 'value' then
+        local encoded = entry.name:gsub('([^%w%-%.%_%~])', function(c)
+          return string.format('%%%02X', string.byte(c))
+        end)
+        local target_uri = 'winreg:///value/' .. normalized_path .. '#value=' .. encoded
+        vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
+      end
+    end
+
+    local function goto_parent()
       if parent then
         local target_uri = 'winreg:///key/' .. parent
         vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
       else
-        -- Go to root
         vim.cmd('edit winreg:///key/')
       end
-    end, { buffer = buf })
+    end
 
-    -- Set up W key to toggle WOW6432Node
-    vim.keymap.set('n', 'W', function()
+    local function toggle_wow6432node()
       local toggled_path = M.toggle_wow6432node(normalized_path)
       if toggled_path then
         local target_uri = 'winreg:///key/' .. toggled_path
@@ -755,48 +745,43 @@ function M.bufread_key(args)
       else
         vim.notify('WOW6432Node toggle not applicable for this path', vim.log.levels.INFO)
       end
-    end, { buffer = buf })
+    end
 
-    vim.keymap.set('n', 'A', function()
-      prompt_add_value(buf, uri, normalized_path)
-    end, { buffer = buf })
+    local function add_value()
+      prompt_write_value(buf, uri, normalized_path, {
+        action = 'Added registry value',
+      })
+    end
 
-    vim.keymap.set('n', 'S', function()
+    local function add_subkey()
       prompt_add_subkey(buf, uri, normalized_path)
-    end, { buffer = buf })
+    end
 
-    vim.keymap.set('n', 'D', function()
-      local entry = get_entry_under_cursor(buf, line_to_entry)
-      if not entry then
-        return
-      end
-
+    local delete_entry = with_entry_under_cursor(buf, line_to_entry, function(entry)
       local target = entry.type == 'key' and ('subkey ' .. entry.name) or ('value ' .. entry.name)
       if vim.fn.confirm('Delete ' .. target .. '?', '&Yes\n&No', 2) ~= 1 then
         return
       end
 
       delete_registry_entry(normalized_path, entry, function()
-        vim.notify('Deleted ' .. target, vim.log.levels.INFO)
-
-        if vim.api.nvim_buf_is_valid(buf) then
-          vim.api.nvim_buf_call(buf, function()
-            vim.cmd('edit! ' .. vim.fn.fnameescape(uri))
-          end)
-        end
+        notify_and_reload(buf, uri, 'Deleted ' .. target)
       end)
-    end, { buffer = buf })
+    end)
 
-    vim.keymap.set('n', 'R', function()
-      local entry = get_entry_under_cursor(buf, line_to_entry)
-      if not entry then
-        return
-      end
-
+    local rename_entry = with_entry_under_cursor(buf, line_to_entry, function(entry)
       prompt_rename_entry(buf, uri, normalized_path, entry)
-    end, { buffer = buf })
+    end)
 
-    vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
+    local map = mapbuf(buf)
+    map('n', '<CR>', open_entry, 'Open registry entry')
+    map('n', '-', goto_parent, 'Go to parent key')
+    map('n', 'W', toggle_wow6432node, 'Toggle WOW6432Node')
+    map('n', 'A', add_value, 'Add registry value')
+    map('n', 'S', add_subkey, 'Add registry subkey')
+    map('n', 'D', delete_entry, 'Delete registry entry')
+    map('n', 'R', rename_entry, 'Rename registry entry')
+    map('n', '<leader>wf', toggle_favorite, 'Toggle favorite')
+    map('n', 'q', close_buffer, 'Close buffer')
 
     vim.api.nvim_buf_call(buf, function()
       ---@diagnostic disable-next-line: param-type-mismatch
@@ -911,19 +896,14 @@ function M.bufread_value(args)
       uri = uri,
     }
 
-    -- Set up - key to go back to parent key
-    vim.keymap.set('n', '-', function()
+    local function goto_parent()
       local target_uri = 'winreg:///key/' .. normalized_path
       vim.cmd('edit ' .. vim.fn.fnameescape(target_uri))
-    end, { buffer = buf })
+    end
 
-    register_toggle_buf(buf)
-
-    -- Set up W key to toggle WOW6432Node
-    vim.keymap.set('n', 'W', function()
+    local function toggle_wow6432node()
       local toggled_path = M.toggle_wow6432node(normalized_path)
       if toggled_path then
-        -- URL encode the value name for the new path
         local encoded = value_name:gsub('([^%w%-%.%_%~])', function(c)
           return string.format('%%%02X', string.byte(c))
         end)
@@ -932,13 +912,23 @@ function M.bufread_value(args)
       else
         vim.notify('WOW6432Node toggle not applicable for this path', vim.log.levels.INFO)
       end
-    end, { buffer = buf })
+    end
 
-    vim.keymap.set('n', 'E', function()
-      edit_value_data(buf, uri, normalized_path, value_entry.name, value_entry.reg_type, value_entry.data)
-    end, { buffer = buf })
+    local function edit_value()
+      prompt_write_value(buf, uri, normalized_path, {
+        action = 'Updated registry value',
+        value_name = value_entry.name,
+        reg_type = value_entry.reg_type,
+        data = value_entry.data,
+      })
+    end
 
-    vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
+    local map = mapbuf(buf)
+    map('n', '-', goto_parent, 'Go to parent key')
+    map('n', 'W', toggle_wow6432node, 'Toggle WOW6432Node')
+    map('n', 'E', edit_value, 'Edit registry value data')
+    map('n', '<leader>wf', toggle_favorite, 'Toggle favorite')
+    map('n', 'q', close_buffer, 'Close buffer')
   end))
 end
 
