@@ -324,6 +324,43 @@ local function add_registry_value(path, value_name, reg_type, data, on_success)
   end))
 end
 
+local function delete_registry_entry(path, entry, on_success)
+  local cmd
+  if entry.type == 'key' then
+    cmd = { 'reg.exe', 'delete', path .. '\\' .. entry.name, '/f' }
+  elseif entry.name == '(Default)' then
+    cmd = { 'reg.exe', 'delete', path, '/ve', '/f' }
+  else
+    cmd = { 'reg.exe', 'delete', path, '/v', entry.name, '/f' }
+  end
+
+  if not is_running_as_admin() then
+    table.insert(cmd, 1, 'sudo')
+  end
+
+  vim.system(cmd, { text = true }, vim.schedule_wrap(function(result)
+    if result.code ~= 0 then
+      local err_msg = result.stderr or 'Failed to delete registry entry'
+      vim.notify('reg.exe delete failed: ' .. err_msg, vim.log.levels.ERROR)
+      return
+    end
+
+    if on_success then
+      on_success()
+    end
+  end))
+end
+
+local function get_entry_under_cursor(buf, line_to_entry)
+  local row = unpack(vim.api.nvim_win_get_cursor(0))
+  local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]
+  if not line or line == '' or vim.startswith(line, '#') or vim.startswith(line, '..') then
+    return nil, line
+  end
+
+  return line_to_entry[row], line
+end
+
 local function edit_value_data(buf, uri, path, value_name, reg_type, current_data)
   local prompt = string.format('New data for %s (%s): ', value_name, reg_type)
 
@@ -558,20 +595,14 @@ function M.bufread_key(args)
     }
 
     register_toggle_buf(buf)
-    vim.api.nvim_buf_create_user_command(buf, 'WinRegAddValue', function()
-      prompt_add_value(buf, uri, normalized_path)
-    end, {
-      desc = 'Add a registry value to the current key',
-    })
 
     -- Set up Enter key to navigate to subkeys or view values
     vim.api.nvim_buf_set_keymap(buf, 'n', '<CR>', '', {
       noremap = true,
       silent = true,
       callback = function()
-        local row = unpack(vim.api.nvim_win_get_cursor(0))
-        local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1]
-        if not line or line == '' or vim.startswith(line, '#') then
+        local entry, line = get_entry_under_cursor(buf, line_to_entry)
+        if not line then
           return
         end
 
@@ -584,8 +615,6 @@ function M.bufread_key(args)
           return
         end
 
-        -- Use line-to-entry mapping to get the actual entry
-        local entry = line_to_entry[row]
         if not entry then
           return
         end
@@ -630,6 +659,28 @@ function M.bufread_key(args)
 
     vim.keymap.set('n', 'A', function()
       prompt_add_value(buf, uri, normalized_path)
+    end, { buffer = buf })
+
+    vim.keymap.set('n', 'D', function()
+      local entry = get_entry_under_cursor(buf, line_to_entry)
+      if not entry then
+        return
+      end
+
+      local target = entry.type == 'key' and ('subkey ' .. entry.name) or ('value ' .. entry.name)
+      if vim.fn.confirm('Delete ' .. target .. '?', '&Yes\n&No', 2) ~= 1 then
+        return
+      end
+
+      delete_registry_entry(normalized_path, entry, function()
+        vim.notify('Deleted ' .. target, vim.log.levels.INFO)
+
+        if vim.api.nvim_buf_is_valid(buf) then
+          vim.api.nvim_buf_call(buf, function()
+            vim.cmd('edit! ' .. vim.fn.fnameescape(uri))
+          end)
+        end
+      end)
     end, { buffer = buf })
 
     vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
