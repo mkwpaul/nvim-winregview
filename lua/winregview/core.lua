@@ -297,11 +297,45 @@ local function register_toggle_buf(buf)
   vim.keymap.set('n', '<leader>wf', impl, { buffer = buf })
 end
 
+local function reload_registry_buffer(buf, uri)
+  if vim.api.nvim_buf_is_valid(buf) then
+    vim.api.nvim_buf_call(buf, function()
+      vim.cmd('edit! ' .. vim.fn.fnameescape(uri))
+    end)
+  end
+end
+
+local function run_reg_command(args, opts, on_success)
+  opts = opts or {}
+
+  local cmd = vim.deepcopy(args)
+  local use_sudo = vim.g.use_sudo
+  if use_sudo == nil then
+    use_sudo = true
+  end
+
+  if opts.sudo and use_sudo and not is_running_as_admin() then
+    table.insert(cmd, 1, 'sudo')
+  end
+
+  vim.system(cmd, { text = true }, vim.schedule_wrap(function(result)
+    if result.code ~= 0 then
+      local err_msg = vim.trim(result.stderr or result.stdout or '')
+      if err_msg == '' then
+        err_msg = opts.default_error or 'reg.exe failed'
+      end
+      vim.notify((opts.error_prefix or 'reg.exe failed') .. ': ' .. err_msg, vim.log.levels.ERROR)
+      return
+    end
+
+    if on_success then
+      on_success(result)
+    end
+  end))
+end
+
 local function add_registry_value(path, value_name, reg_type, data, on_success)
   local cmd = { 'reg.exe', 'add', path }
-  if not is_running_as_admin() then
-    cmd = { 'sudo', 'reg.exe', 'add', path }
-  end
 
   if value_name == '(Default)' then
     vim.list_extend(cmd, { '/ve' })
@@ -309,19 +343,20 @@ local function add_registry_value(path, value_name, reg_type, data, on_success)
     vim.list_extend(cmd, { '/v', value_name })
   end
 
-  vim.list_extend(cmd, { '/t', reg_type, '/d', data, '/f', })
+  vim.list_extend(cmd, { '/t', reg_type, '/d', data, '/f' })
+  run_reg_command(cmd, {
+    sudo = true,
+    error_prefix = 'reg.exe add failed',
+    default_error = 'Failed to update registry value',
+  }, on_success)
+end
 
-  vim.system(cmd, { text = true }, vim.schedule_wrap(function(result)
-    if result.code ~= 0 then
-      local err_msg = result.stderr or 'Failed to update registry value'
-      vim.notify('reg.exe add failed: ' .. err_msg, vim.log.levels.ERROR)
-      return
-    end
-
-    if on_success then
-      on_success()
-    end
-  end))
+local function add_registry_key(path, key_name, on_success)
+  run_reg_command({ 'reg.exe', 'add', path .. '\\' .. key_name, '/f' }, {
+    sudo = true,
+    error_prefix = 'reg.exe add failed',
+    default_error = 'Failed to create registry key',
+  }, on_success)
 end
 
 local function delete_registry_entry(path, entry, on_success)
@@ -334,21 +369,34 @@ local function delete_registry_entry(path, entry, on_success)
     cmd = { 'reg.exe', 'delete', path, '/v', entry.name, '/f' }
   end
 
-  if not is_running_as_admin() then
-    table.insert(cmd, 1, 'sudo')
-  end
+  run_reg_command(cmd, {
+    sudo = true,
+    error_prefix = 'reg.exe delete failed',
+    default_error = 'Failed to delete registry entry',
+  }, on_success)
+end
 
-  vim.system(cmd, { text = true }, vim.schedule_wrap(function(result)
-    if result.code ~= 0 then
-      local err_msg = result.stderr or 'Failed to delete registry entry'
-      vim.notify('reg.exe delete failed: ' .. err_msg, vim.log.levels.ERROR)
-      return
-    end
+local function rename_registry_key(path, old_name, new_name, on_success)
+  local old_path = path .. '\\' .. old_name
+  local new_path = path .. '\\' .. new_name
 
-    if on_success then
-      on_success()
-    end
-  end))
+  run_reg_command({ 'reg.exe', 'copy', old_path, new_path, '/s', '/f' }, {
+    sudo = true,
+    error_prefix = 'reg.exe copy failed',
+    default_error = 'Failed to rename registry key',
+  }, function()
+    run_reg_command({ 'reg.exe', 'delete', old_path, '/f' }, {
+      sudo = true,
+      error_prefix = 'reg.exe delete failed',
+      default_error = 'Failed to rename registry key',
+    }, on_success)
+  end)
+end
+
+local function rename_registry_value(path, entry, new_name, on_success)
+  add_registry_value(path, new_name, entry.reg_type, entry.data, function()
+    delete_registry_entry(path, entry, on_success)
+  end)
 end
 
 local function get_entry_under_cursor(buf, line_to_entry)
@@ -374,12 +422,7 @@ local function edit_value_data(buf, uri, path, value_name, reg_type, current_dat
 
     add_registry_value(path, value_name, reg_type, input, function()
       vim.notify('Updated registry value: ' .. value_name, vim.log.levels.INFO)
-
-      if vim.api.nvim_buf_is_valid(buf) then
-        vim.api.nvim_buf_call(buf, function()
-          vim.cmd('edit! ' .. vim.fn.fnameescape(uri))
-        end)
-      end
+      reload_registry_buffer(buf, uri)
     end)
   end)
 end
@@ -414,14 +457,71 @@ local function prompt_add_value(buf, uri, path)
 
         add_registry_value(path, value_name, reg_type, data_input, function()
           vim.notify('Added registry value: ' .. value_name, vim.log.levels.INFO)
-
-          if vim.api.nvim_buf_is_valid(buf) then
-            vim.api.nvim_buf_call(buf, function()
-              vim.cmd('edit! ' .. vim.fn.fnameescape(uri))
-            end)
-          end
+          reload_registry_buffer(buf, uri)
         end)
       end)
+    end)
+  end)
+end
+
+local function prompt_add_subkey(buf, uri, path)
+  vim.ui.input({ prompt = 'Subkey name: ' }, function(name_input)
+    if name_input == nil then
+      return
+    end
+
+    local key_name = vim.trim(name_input)
+    if key_name == '' then
+      return
+    end
+
+    add_registry_key(path, key_name, function()
+      vim.notify('Added registry key: ' .. key_name, vim.log.levels.INFO)
+      reload_registry_buffer(buf, uri)
+    end)
+  end)
+end
+
+local function prompt_rename_entry(buf, uri, path, entry)
+  local prompt
+  local default
+
+  if entry.type == 'key' then
+    prompt = 'New subkey name: '
+    default = entry.name
+  else
+    prompt = 'New value name (empty for default): '
+    default = entry.name == '(Default)' and '' or entry.name
+  end
+
+  vim.ui.input({ prompt = prompt, default = default }, function(name_input)
+    if name_input == nil then
+      return
+    end
+
+    local new_name = vim.trim(name_input)
+    if entry.type == 'key' then
+      if new_name == '' or new_name == entry.name then
+        return
+      end
+
+      rename_registry_key(path, entry.name, new_name, function()
+        vim.notify('Renamed subkey to: ' .. new_name, vim.log.levels.INFO)
+        reload_registry_buffer(buf, uri)
+      end)
+      return
+    end
+
+    if new_name == '' then
+      new_name = '(Default)'
+    end
+    if new_name == entry.name then
+      return
+    end
+
+    rename_registry_value(path, entry, new_name, function()
+      vim.notify('Renamed value to: ' .. new_name, vim.log.levels.INFO)
+      reload_registry_buffer(buf, uri)
     end)
   end)
 end
@@ -661,6 +761,10 @@ function M.bufread_key(args)
       prompt_add_value(buf, uri, normalized_path)
     end, { buffer = buf })
 
+    vim.keymap.set('n', 'S', function()
+      prompt_add_subkey(buf, uri, normalized_path)
+    end, { buffer = buf })
+
     vim.keymap.set('n', 'D', function()
       local entry = get_entry_under_cursor(buf, line_to_entry)
       if not entry then
@@ -681,6 +785,15 @@ function M.bufread_key(args)
           end)
         end
       end)
+    end, { buffer = buf })
+
+    vim.keymap.set('n', 'R', function()
+      local entry = get_entry_under_cursor(buf, line_to_entry)
+      if not entry then
+        return
+      end
+
+      prompt_rename_entry(buf, uri, normalized_path, entry)
     end, { buffer = buf })
 
     vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
