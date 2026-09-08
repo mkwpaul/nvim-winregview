@@ -37,6 +37,16 @@ local REG_TYPES = {
   REG_NONE = "None",
 }
 
+local REG_TYPE_ORDER = {
+  'REG_SZ',
+  'REG_EXPAND_SZ',
+  'REG_BINARY',
+  'REG_DWORD',
+  'REG_QWORD',
+  'REG_MULTI_SZ',
+  'REG_NONE',
+}
+
 local is_admin
 
 local function is_running_as_admin()
@@ -287,6 +297,33 @@ local function register_toggle_buf(buf)
   vim.keymap.set('n', '<leader>wf', impl, { buffer = buf })
 end
 
+local function add_registry_value(path, value_name, reg_type, data, on_success)
+  local cmd = { 'reg.exe', 'add', path }
+  if not is_running_as_admin() then
+    cmd = { 'sudo', 'reg.exe', 'add', path }
+  end
+
+  if value_name == '(Default)' then
+    vim.list_extend(cmd, { '/ve' })
+  else
+    vim.list_extend(cmd, { '/v', value_name })
+  end
+
+  vim.list_extend(cmd, { '/t', reg_type, '/d', data, '/f', })
+
+  vim.system(cmd, { text = true }, vim.schedule_wrap(function(result)
+    if result.code ~= 0 then
+      local err_msg = result.stderr or 'Failed to update registry value'
+      vim.notify('reg.exe add failed: ' .. err_msg, vim.log.levels.ERROR)
+      return
+    end
+
+    if on_success then
+      on_success()
+    end
+  end))
+end
+
 local function edit_value_data(buf, uri, path, value_name, reg_type, current_data)
   local prompt = string.format('New data for %s (%s): ', value_name, reg_type)
 
@@ -298,26 +335,7 @@ local function edit_value_data(buf, uri, path, value_name, reg_type, current_dat
       return
     end
 
-    local cmd = { 'reg.exe', 'add', path }
-    if not is_running_as_admin() then
-      cmd = { 'sudo', 'reg.exe', 'add', path }
-    end
-
-    if value_name == '(Default)' then
-      vim.list_extend(cmd, { '/ve' })
-    else
-      vim.list_extend(cmd, { '/v', value_name })
-    end
-
-    vim.list_extend(cmd, { '/t', reg_type, '/d', input, '/f', })
-
-    vim.system(cmd, { text = true }, vim.schedule_wrap(function(result)
-      if result.code ~= 0 then
-        local err_msg = result.stderr or 'Failed to update registry value'
-        vim.notify('reg.exe add failed: ' .. err_msg, vim.log.levels.ERROR)
-        return
-      end
-
+    add_registry_value(path, value_name, reg_type, input, function()
       vim.notify('Updated registry value: ' .. value_name, vim.log.levels.INFO)
 
       if vim.api.nvim_buf_is_valid(buf) then
@@ -325,7 +343,49 @@ local function edit_value_data(buf, uri, path, value_name, reg_type, current_dat
           vim.cmd('edit! ' .. vim.fn.fnameescape(uri))
         end)
       end
-    end))
+    end)
+  end)
+end
+
+local function prompt_add_value(buf, uri, path)
+  vim.ui.input({ prompt = 'Value name (empty for default): ' }, function(name_input)
+    if name_input == nil then
+      return
+    end
+
+    local value_name = vim.trim(name_input)
+    if value_name == '' then
+      value_name = '(Default)'
+    end
+
+    vim.ui.select(REG_TYPE_ORDER, {
+      prompt = 'Registry value type:',
+      format_item = function(item)
+        return string.format('%s (%s)', item, REG_TYPES[item] or item)
+      end,
+    }, function(reg_type)
+      if not reg_type then
+        return
+      end
+
+      vim.ui.input({
+        prompt = string.format('Data for %s (%s): ', value_name, reg_type),
+      }, function(data_input)
+        if data_input == nil then
+          return
+        end
+
+        add_registry_value(path, value_name, reg_type, data_input, function()
+          vim.notify('Added registry value: ' .. value_name, vim.log.levels.INFO)
+
+          if vim.api.nvim_buf_is_valid(buf) then
+            vim.api.nvim_buf_call(buf, function()
+              vim.cmd('edit! ' .. vim.fn.fnameescape(uri))
+            end)
+          end
+        end)
+      end)
+    end)
   end)
 end
 
@@ -498,6 +558,11 @@ function M.bufread_key(args)
     }
 
     register_toggle_buf(buf)
+    vim.api.nvim_buf_create_user_command(buf, 'WinRegAddValue', function()
+      prompt_add_value(buf, uri, normalized_path)
+    end, {
+      desc = 'Add a registry value to the current key',
+    })
 
     -- Set up Enter key to navigate to subkeys or view values
     vim.api.nvim_buf_set_keymap(buf, 'n', '<CR>', '', {
@@ -561,6 +626,10 @@ function M.bufread_key(args)
       else
         vim.notify('WOW6432Node toggle not applicable for this path', vim.log.levels.INFO)
       end
+    end, { buffer = buf })
+
+    vim.keymap.set('n', 'A', function()
+      prompt_add_value(buf, uri, normalized_path)
     end, { buffer = buf })
 
     vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':bd!<CR>', { noremap = true, silent = true })
